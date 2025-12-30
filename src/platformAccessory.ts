@@ -9,14 +9,17 @@ const POSITION_TOLERANCE = 2;
 // Maximum time to wait for blind to reach target (ms) - fail-safe
 const MAX_MOVEMENT_TIMEOUT = 90000;
 
-// Polling intervals after command (ms) - very aggressive for responsive UI
+// Polling intervals after command (ms)
 const POLL_INTERVALS = [
-  300, 300, 300, 300, 300, 300, 300,  // Every 300ms for first 2.1s
-  500, 500, 500, 500, 500, 500,        // Every 500ms for next 3s
+  500, 500, 500, 500,                  // Every 500ms for first 2s
   1000, 1000, 1000, 1000, 1000,        // Every 1s for next 5s
   2000, 2000, 2000, 2000, 2000,        // Every 2s for next 10s
   5000, 5000, 5000, 5000, 5000, 5000,  // Every 5s for next 30s
 ];
+
+// Position interpolation settings
+const INTERPOLATION_INTERVAL = 200;  // Update display every 200ms
+const BLIND_SPEED_PERCENT_PER_SEC = 8;  // Estimated ~12.5s for full travel
 
 // HomeKit position states
 const POSITION_STATE = {
@@ -48,6 +51,11 @@ export class MotionBlindAccessory {
   private commandTarget: number = 0;
   private commandDirection: number = POSITION_STATE.STOPPED;
   private commandTimeoutTimer: NodeJS.Timeout | null = null;
+  private commandStartPosition: number = 0;
+  private commandStartTime: number = 0;
+
+  // Position interpolation for smooth UI
+  private interpolationTimer: NodeJS.Timeout | null = null;
 
   // Polling
   private pollTimers: NodeJS.Timeout[] = [];
@@ -112,6 +120,7 @@ export class MotionBlindAccessory {
     this.commandInProgress = false;
     this.clearCommandTimeout();
     this.cancelPolling();
+    this.stopInterpolation();
   }
 
   /**
@@ -130,6 +139,7 @@ export class MotionBlindAccessory {
 
     this.clearCommandTimeout();
     this.cancelPolling();
+    this.stopInterpolation();
 
     this.pushStateToHomeKit();
   }
@@ -148,6 +158,7 @@ export class MotionBlindAccessory {
     this.displayTargetPosition = this.displayPosition;
 
     this.cancelPolling();
+    this.stopInterpolation();
     this.pushStateToHomeKit();
 
     // Request fresh status
@@ -181,19 +192,23 @@ export class MotionBlindAccessory {
       return;
     }
 
-    // Still moving - update position if it's progressing toward target
-    const isProgressing = this.commandDirection === POSITION_STATE.INCREASING
+    // Still moving - check if gateway is ahead of our interpolation
+    // If so, reset interpolation base to gateway's reported position
+    const gatewayIsAhead = this.commandDirection === POSITION_STATE.INCREASING
       ? gatewayPosition > this.displayPosition
       : gatewayPosition < this.displayPosition;
 
-    if (isProgressing) {
+    if (gatewayIsAhead) {
+      // Gateway is further along - sync to it
       this.displayPosition = gatewayPosition;
+      this.commandStartPosition = gatewayPosition;
+      this.commandStartTime = Date.now();
       this.service.updateCharacteristic(
         this.platform.Characteristic.CurrentPosition,
         this.displayPosition,
       );
       this.platform.log.debug(
-        `${this.device.name} progress: ${this.displayPosition}% -> ${this.commandTarget}%`,
+        `${this.device.name} synced to gateway: ${this.displayPosition}% -> ${this.commandTarget}%`,
       );
     }
 
@@ -274,6 +289,8 @@ export class MotionBlindAccessory {
     this.commandDirection = targetPosition > currentPos
       ? POSITION_STATE.INCREASING
       : POSITION_STATE.DECREASING;
+    this.commandStartPosition = currentPos;
+    this.commandStartTime = Date.now();
 
     // Update display state immediately
     this.displayTargetPosition = targetPosition;
@@ -294,7 +311,10 @@ export class MotionBlindAccessory {
       await this.platform.gateway.setPosition(this.device.mac, protocolPosition);
       this.platform.log.debug(`${this.device.name} command sent successfully`);
 
-      // Start polling for status updates
+      // Start position interpolation for smooth UI
+      this.startInterpolation();
+
+      // Start polling for status updates (less aggressive since we interpolate)
       this.schedulePolling();
     } catch (e) {
       this.platform.log.error(`${this.device.name} command failed:`, e);
@@ -365,6 +385,63 @@ export class MotionBlindAccessory {
     if (this.commandTimeoutTimer) {
       clearTimeout(this.commandTimeoutTimer);
       this.commandTimeoutTimer = null;
+    }
+  }
+
+  /**
+   * Start position interpolation for smooth UI updates
+   * Estimates position based on elapsed time and blind speed
+   */
+  private startInterpolation(): void {
+    this.stopInterpolation();
+
+    this.interpolationTimer = setInterval(() => {
+      if (!this.commandInProgress) {
+        this.stopInterpolation();
+        return;
+      }
+
+      const elapsed = (Date.now() - this.commandStartTime) / 1000;
+      const distanceTraveled = elapsed * BLIND_SPEED_PERCENT_PER_SEC;
+
+      let interpolatedPosition: number;
+      if (this.commandDirection === POSITION_STATE.INCREASING) {
+        interpolatedPosition = Math.min(
+          this.commandStartPosition + distanceTraveled,
+          this.commandTarget,
+        );
+      } else {
+        interpolatedPosition = Math.max(
+          this.commandStartPosition - distanceTraveled,
+          this.commandTarget,
+        );
+      }
+
+      // Round to nearest integer
+      interpolatedPosition = Math.round(interpolatedPosition);
+
+      // Only update if position changed
+      if (interpolatedPosition !== this.displayPosition) {
+        this.displayPosition = interpolatedPosition;
+        this.service.updateCharacteristic(
+          this.platform.Characteristic.CurrentPosition,
+          this.displayPosition,
+        );
+
+        // Check if interpolation reached target
+        if (this.hasReachedTarget(interpolatedPosition)) {
+          this.platform.log.debug(
+            `${this.device.name} interpolation reached target, waiting for gateway confirmation`,
+          );
+        }
+      }
+    }, INTERPOLATION_INTERVAL);
+  }
+
+  private stopInterpolation(): void {
+    if (this.interpolationTimer) {
+      clearInterval(this.interpolationTimer);
+      this.interpolationTimer = null;
     }
   }
 }

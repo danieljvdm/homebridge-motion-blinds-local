@@ -2,7 +2,7 @@
   "name": "homebridge-motion-blinds-local",
   "displayName": "Motion Blinds Local",
   "type": "module",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Homebridge plugin for local UDP control of Motion Blinds",
   "author": "danieljvdm",
   "license": "Apache-2.0",
