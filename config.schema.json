@@ -1,0 +1,94 @@
+{
+  "pluginAlias": "MotionBlindsLocal",
+  "pluginType": "platform",
+  "singular": true,
+  "headerDisplay": "Local UDP control for Motion Blinds. Blinds are auto-discovered if not manually configured.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "Motion Blinds",
+        "required": true
+      },
+      "gatewayIp": {
+        "title": "Gateway IP Address",
+        "type": "string",
+        "required": true,
+        "description": "The IP address of your Motion Blinds gateway (check your router or the Motion Blinds app)"
+      },
+      "key": {
+        "title": "API Key",
+        "type": "string",
+        "required": true,
+        "description": "A 16-character key from your app. Motion Blinds app: Settings > About. Bliss app: Open sidebar > tap user photo > About > tap 5 times quickly on the About screen to reveal the key."
+      },
+      "pollingInterval": {
+        "title": "Polling Interval (ms)",
+        "type": "integer",
+        "default": 60000,
+        "minimum": 10000,
+        "description": "How often to poll blind status (default: 60000ms = 1 minute)"
+      },
+      "blinds": {
+        "title": "Blinds (Optional)",
+        "description": "Leave empty to auto-discover all blinds from the gateway. Only add entries here if you want custom names or to exclude certain blinds.",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "title": "Name",
+              "type": "string",
+              "required": true,
+              "description": "Display name for this blind in HomeKit"
+            },
+            "mac": {
+              "title": "MAC Address",
+              "type": "string",
+              "required": true,
+              "description": "The MAC address of the blind (16 hex characters, e.g., 4c7525178bf70001)"
+            },
+            "deviceType": {
+              "title": "Device Type",
+              "type": "string",
+              "default": "10000000",
+              "description": "Device type code (default: 10000000)"
+            }
+          }
+        }
+      }
+    }
+  },
+  "layout": [
+    {
+      "type": "fieldset",
+      "title": "Gateway Settings",
+      "items": [
+        "name",
+        "gatewayIp",
+        "key",
+        "pollingInterval"
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Blinds (Optional - auto-discovered if empty)",
+      "expandable": true,
+      "expanded": false,
+      "items": [
+        {
+          "key": "blinds",
+          "type": "array",
+          "buttonText": "Add Blind",
+          "items": [
+            "blinds[].name",
+            "blinds[].mac",
+            "blinds[].deviceType"
+          ]
+        }
+      ]
+    }
+  ]
+}
