@@ -118,9 +118,10 @@ export class MotionBlindsPlatform implements DynamicPlatformPlugin {
   }
 
   private discoverDevices(config: MotionBlindsConfig, deviceList: DeviceListResponse): BlindConfig[] {
-    let blinds = config.blinds || [];
+    // Filter out any invalid blind entries (missing mac)
+    let blinds = (config.blinds || []).filter(b => b.mac && typeof b.mac === 'string' && b.mac.length > 0);
 
-    // Auto-discover blinds if none configured
+    // Auto-discover blinds if none configured (or all configured entries were invalid)
     if (blinds.length === 0) {
       this.log.info('No blinds configured, auto-discovering from gateway...');
 
