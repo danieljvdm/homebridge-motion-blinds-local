@@ -86,6 +86,15 @@ export class MotionBlindsPlatform implements DynamicPlatformPlugin {
       // Get device list to obtain token and discover devices
       const deviceList = await this.gateway.getDeviceList();
       this.log.info(`Gateway firmware: ${deviceList.fwVersion}, protocol: ${deviceList.ProtocolVersion}`);
+
+      // Debug: log raw device list
+      this.log.debug('Raw device list response:', JSON.stringify(deviceList, null, 2));
+
+      if (!deviceList.data || !Array.isArray(deviceList.data)) {
+        this.log.error('Invalid device list response - no data array');
+        return;
+      }
+
       this.log.debug(`Discovered ${deviceList.data.length} devices from gateway`);
 
       // Register blinds (auto-discover if none configured)
@@ -115,10 +124,19 @@ export class MotionBlindsPlatform implements DynamicPlatformPlugin {
     if (blinds.length === 0) {
       this.log.info('No blinds configured, auto-discovering from gateway...');
 
-      const discoveredBlinds = deviceList.data.filter(d => d.deviceType === BLIND_DEVICE_TYPE);
+      // Filter for blind device types and ensure mac exists
+      const discoveredBlinds = deviceList.data.filter(d => {
+        const isBlind = d.deviceType === BLIND_DEVICE_TYPE;
+        const hasMac = d.mac && typeof d.mac === 'string' && d.mac.length > 0;
+        if (isBlind && !hasMac) {
+          this.log.warn('Found blind device without valid MAC:', JSON.stringify(d));
+        }
+        return isBlind && hasMac;
+      });
 
       if (discoveredBlinds.length === 0) {
-        this.log.warn('No blinds found on gateway');
+        this.log.warn('No blinds found on gateway. Device types found:',
+          deviceList.data.map(d => `${d.mac || 'no-mac'}:${d.deviceType}`).join(', '));
         return [];
       }
 
@@ -132,6 +150,11 @@ export class MotionBlindsPlatform implements DynamicPlatformPlugin {
     }
 
     for (const blind of blinds) {
+      if (!blind.mac) {
+        this.log.error('Skipping blind with missing MAC address:', blind.name);
+        continue;
+      }
+
       const uuid = this.api.hap.uuid.generate(blind.mac);
 
       const existingAccessory = this.accessories.get(uuid);
