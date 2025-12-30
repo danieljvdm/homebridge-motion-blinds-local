@@ -7,15 +7,15 @@ import type { BlindState } from './motionGateway.js';
 const POSITION_TOLERANCE = 2;
 
 // Maximum time to wait for blind to reach target (ms) - fail-safe
-const MAX_MOVEMENT_TIMEOUT = 120000;
+const MAX_MOVEMENT_TIMEOUT = 90000;
 
-// Polling intervals after command (ms) - aggressive polling for responsive UI
+// Polling intervals after command (ms) - very aggressive for responsive UI
 const POLL_INTERVALS = [
-  500, 500, 500, 500, 500,           // Every 500ms for first 2.5s
-  1000, 1000, 1000, 1000, 1000,      // Every 1s for next 5s
-  2000, 2000, 2000,                   // Every 2s for next 6s
-  5000, 5000, 5000, 5000,             // Every 5s for next 20s
-  10000, 10000, 10000, 10000, 10000,  // Every 10s for next 50s
+  300, 300, 300, 300, 300, 300, 300,  // Every 300ms for first 2.1s
+  500, 500, 500, 500, 500, 500,        // Every 500ms for next 3s
+  1000, 1000, 1000, 1000, 1000,        // Every 1s for next 5s
+  2000, 2000, 2000, 2000, 2000,        // Every 2s for next 10s
+  5000, 5000, 5000, 5000, 5000, 5000,  // Every 5s for next 30s
 ];
 
 // HomeKit position states
@@ -47,7 +47,6 @@ export class MotionBlindAccessory {
   private commandInProgress: boolean = false;
   private commandTarget: number = 0;
   private commandDirection: number = POSITION_STATE.STOPPED;
-  private commandStartTime: number = 0;
   private commandTimeoutTimer: NodeJS.Timeout | null = null;
 
   // Polling
@@ -107,11 +106,20 @@ export class MotionBlindAccessory {
   }
 
   /**
+   * Cancel any in-progress command and clean up
+   */
+  private cancelCurrentCommand(): void {
+    this.commandInProgress = false;
+    this.clearCommandTimeout();
+    this.cancelPolling();
+  }
+
+  /**
    * Complete the current command - blind has reached target
    */
   private completeCommand(finalPosition: number): void {
     this.platform.log.info(
-      `${this.device.name} reached target: ${finalPosition}% (target was ${this.commandTarget}%)`,
+      `${this.device.name} reached target: ${finalPosition}%`,
     );
 
     this.commandInProgress = false;
@@ -198,30 +206,72 @@ export class MotionBlindAccessory {
   async setTargetPosition(value: CharacteristicValue): Promise<void> {
     const targetPosition = value as number;
 
-    this.platform.log.info(`${this.device.name} command: move to ${targetPosition}%`);
-
     if (!this.platform.gateway) {
       throw new this.platform.api.hap.HapStatusError(
         this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
       );
     }
 
-    // Determine direction
-    const startPosition = this.commandInProgress ? this.displayPosition : this.confirmedPosition;
+    // Get current position for comparison
+    const currentPos = this.commandInProgress ? this.displayPosition : this.confirmedPosition;
 
-    if (Math.abs(targetPosition - startPosition) <= POSITION_TOLERANCE) {
-      // Already at target
+    // Check if this is a "stop" command (target ≈ current while moving)
+    // This happens when user taps again to stop a moving blind
+    if (this.commandInProgress && Math.abs(targetPosition - currentPos) <= POSITION_TOLERANCE) {
+      this.platform.log.info(`${this.device.name} STOP command (target=${targetPosition}%, current=${currentPos}%)`);
+
+      // Cancel current command tracking
+      this.cancelCurrentCommand();
+
+      // Send stop command to blind
+      try {
+        await this.platform.gateway.stop(this.device.mac);
+      } catch (e) {
+        this.platform.log.debug(`${this.device.name} stop command failed:`, e);
+      }
+
+      // Update state to stopped at current position
+      this.displayTargetPosition = currentPos;
+      this.displayPositionState = POSITION_STATE.STOPPED;
+      this.pushStateToHomeKit();
+
+      // Poll to get actual position after stop
+      setTimeout(async () => {
+        try {
+          await this.platform.gateway?.getStatus(this.device.mac);
+        } catch (e) { /* ignore */ }
+      }, 500);
+
+      return;
+    }
+
+    // Check if already at target (no movement needed)
+    if (Math.abs(targetPosition - currentPos) <= POSITION_TOLERANCE) {
       this.platform.log.debug(`${this.device.name} already at target position`);
       this.displayTargetPosition = targetPosition;
       this.pushStateToHomeKit();
       return;
     }
 
+    // New movement command - cancel any existing command first
+    if (this.commandInProgress) {
+      this.platform.log.info(`${this.device.name} canceling previous command, new target: ${targetPosition}%`);
+      this.cancelCurrentCommand();
+
+      // Send stop first to interrupt current movement
+      try {
+        await this.platform.gateway.stop(this.device.mac);
+      } catch (e) {
+        this.platform.log.debug(`${this.device.name} stop before new command failed:`, e);
+      }
+    }
+
+    this.platform.log.info(`${this.device.name} command: move to ${targetPosition}%`);
+
     // Set up command tracking
     this.commandInProgress = true;
     this.commandTarget = targetPosition;
-    this.commandStartTime = Date.now();
-    this.commandDirection = targetPosition > startPosition
+    this.commandDirection = targetPosition > currentPos
       ? POSITION_STATE.INCREASING
       : POSITION_STATE.DECREASING;
 
